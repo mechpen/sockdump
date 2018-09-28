@@ -4,6 +4,7 @@ import resource
 from bcc import BPF
 import ctypes as ct
 
+# FIXME: may need per cpu packet_array
 # FIXME: sock path is relative
 
 bpf_text = '''

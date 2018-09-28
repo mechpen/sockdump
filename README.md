@@ -51,6 +51,7 @@ Limitations
 
 ```
 $ grep FIXME: sockdump.py 
+# FIXME: may need per cpu packet_array
 # FIXME: sock path is relative
 # FIXME: optimize filter
 # FIXME: hexl and pcap output
