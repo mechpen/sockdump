@@ -1,10 +1,11 @@
 #!/usr/bin/python
 import math
 import resource
-from bcc import BPF
 import ctypes as ct
+import multiprocessing
 
-# FIXME: may need per cpu packet_array
+from bcc import BPF
+
 # FIXME: sock path is relative
 
 bpf_text = '''
@@ -26,7 +27,7 @@ struct packet {
     char data[SS_MAX_SEG_SIZE];
 };
 
-BPF_ARRAY(packet_array, struct packet, 1);
+BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
 BPF_PERF_OUTPUT(events);
 
 int probe_unix_stream_sendmsg(struct pt_regs *ctx,
@@ -52,12 +53,12 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     if (match == 0)
         return 0;
 
-    n = 0;
+    n = bpf_get_smp_processor_id();
     packet = packet_array.lookup(&n);
     if (packet == NULL)
         return 0;
 
-    packet->pid = bpf_get_current_pid_tgid() >> 32;
+    packet->pid = bpf_get_current_pid_tgid();
     bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
 
     iter = &msg->msg_iter;
@@ -105,6 +106,7 @@ UNIX_PATH_MAX = 108
 
 SS_MAX_SEG_SIZE = 1024 * 1024
 SS_MAX_NR_SEGS = 10
+SS_EVENT_BUFFER_SIZE = 16 * 1024 * 1024
 
 SS_PACKET_F_ERR = 1
 
@@ -121,6 +123,7 @@ def render_text(bpf_text, seg_size, nr_segs, filter):
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
         '__SS_MAX_NR_SEGS__': nr_segs,
+        '__NUM_CPUS__': multiprocessing.cpu_count(),
         '__FILTER__': filter,
     }
     for k, v in replaces.items():
@@ -161,8 +164,7 @@ def main(args):
     b.attach_kprobe(
         event='unix_stream_sendmsg', fn_name='probe_unix_stream_sendmsg')
 
-    npages = args.seg_size / resource.getpagesize()
-    npages = math.ceil(npages) * args.buffer_nseg
+    npages = args.buffer_size / resource.getpagesize()
     npages = 2 ** math.ceil(math.log(npages, 2))
 
     output_fn = outputs[args.output]
@@ -182,8 +184,8 @@ if __name__ == '__main__':
         '--nr-segs', type=int, default=SS_MAX_NR_SEGS,
         help='max number of iovec segments')
     parser.add_argument(
-        '--buffer-nseg', type=int, default=10,
-        help='max number of segments in buffer')
+        '--buffer-size', type=int, default=SS_EVENT_BUFFER_SIZE,
+        help='perf event buffer size')
     parser.add_argument(
         '--output', choices=outputs.keys(), default='string',
         help='output format')
