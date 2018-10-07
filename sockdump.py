@@ -58,7 +58,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     if (packet == NULL)
         return 0;
 
-    packet->pid = bpf_get_current_pid_tgid();
+    packet->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
 
     iter = &msg->msg_iter;
@@ -110,14 +110,19 @@ SS_EVENT_BUFFER_SIZE = 16 * 1024 * 1024
 
 SS_PACKET_F_ERR = 1
 
-class Packet(ct.Structure):
-    _fields_ = [
-        ('pid', ct.c_uint),
-        ('len', ct.c_uint),
-        ('flags', ct.c_uint),
-        ('comm', ct.c_char * TASK_COMM_LEN),
-        ('data', ct.c_char * SS_MAX_SEG_SIZE),
-    ]
+Packet = None
+
+def make_packet(seg_size):
+    global Packet
+    class packet(ct.Structure):
+        _fields_ = [
+            ('pid', ct.c_uint),
+            ('len', ct.c_uint),
+            ('flags', ct.c_uint),
+            ('comm', ct.c_char * TASK_COMM_LEN),
+            ('data', ct.c_char * seg_size),
+        ]
+    Packet = packet
 
 def render_text(bpf_text, seg_size, nr_segs, filter):
     replaces = {
@@ -158,6 +163,8 @@ outputs = {
 }
 
 def main(args):
+    make_packet(args.seg_size)
+
     filter = build_filter(args.sock)
     text = render_text(bpf_text, args.seg_size, args.nr_segs, filter)
     b = BPF(text=text)
