@@ -1,15 +1,14 @@
-sockdump
-========
+# sockdump
 
 Dump unix domain socket traffic.
 
-Requirement
------------
+## Requirement
 
 - bcc
 
-Example
--------
+## Example
+
+### string output
 
 ```
 $ sudo ./sockdump.py /var/run/docker.sock # run "docker ps" in another terminal
@@ -46,6 +45,8 @@ Content-Length: 3
 []
 ```
 
+### pcap output
+
 ```
 $ sudo ./sockdump.py /var/run/docker.sock --format pcap --output dump
 ^C
@@ -54,8 +55,7 @@ $ wireshark-gtk -X lua_script:wireshark/dummy.lua dump
 ```
 ![wireshark](wireshark/wireshark.jpg)
 
-Limitations
------------
+## Limitations
 
 ```
 $ grep FIXME: sockdump.py 
