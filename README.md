@@ -46,6 +46,14 @@ Content-Length: 3
 []
 ```
 
+```
+$ sudo ./sockdump.py /var/run/docker.sock --format pcap --output dump
+^C
+16 packets captured
+$ wireshark-gtk -X lua_script:wireshark/dummy.lua dump
+```
+![wireshark](wireshark/wireshark.jpg)
+
 Limitations
 -----------
 
@@ -53,5 +61,4 @@ Limitations
 $ grep FIXME: sockdump.py 
 # FIXME: sock path is relative
 # FIXME: optimize filter
-# FIXME: hexl and pcap output
 ```

@@ -1,5 +1,9 @@
 #!/usr/bin/python
+import sys
+import time
 import math
+import struct
+import signal
 import resource
 import ctypes as ct
 import multiprocessing
@@ -27,6 +31,8 @@ struct packet {
     char data[SS_MAX_SEG_SIZE];
 };
 
+// use regular array instead percpu array because
+// percpu array element size cannot be larger than 3k
 BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
 BPF_PERF_OUTPUT(events);
 
@@ -110,20 +116,6 @@ SS_EVENT_BUFFER_SIZE = 16 * 1024 * 1024
 
 SS_PACKET_F_ERR = 1
 
-Packet = None
-
-def make_packet(seg_size):
-    global Packet
-    class packet(ct.Structure):
-        _fields_ = [
-            ('pid', ct.c_uint),
-            ('len', ct.c_uint),
-            ('flags', ct.c_uint),
-            ('comm', ct.c_char * TASK_COMM_LEN),
-            ('data', ct.c_char * seg_size),
-        ]
-    Packet = packet
-
 def render_text(bpf_text, seg_size, nr_segs, filter):
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
@@ -149,24 +141,116 @@ def build_filter(sock_path):
 
     return filter
 
-def string_output(cpu, event, size):
+class Packet(ct.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ('pid', ct.c_uint),
+        ('len', ct.c_uint),
+        ('flags', ct.c_uint),
+        ('comm', ct.c_char * TASK_COMM_LEN),
+        # variable length data
+    ]
+
+PCAP_LINK_TYPE = 147    # USER_0
+
+PACKET_SIZE = ct.sizeof(Packet)
+
+packet_count = 0
+
+def parse_event(event, size):
+    global packet_count
+
+    packet_count += 1
+
     packet = ct.cast(event, ct.POINTER(Packet)).contents
-    print('>>> %s[%d] len %d' % (packet.comm.decode(), packet.pid, packet.len))
+    event += PACKET_SIZE
+
+    size -= PACKET_SIZE
+    data_len = packet.len
+    if  data_len > size:
+        data_len = size
+
+    data_type = ct.c_char * data_len
+    data = ct.cast(event, ct.POINTER(data_type)).contents
+
+    return packet, data
+
+def print_header(packet, data):
+    ts = time.time()
+    ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%d' % (ts%1 * 1000)
+
+    print('%s >>> process %s[%d] len %d(%d)' % (
+        ts, packet.comm.decode(), packet.pid, len(data), packet.len))
+
+def string_output(cpu, event, size):
+    packet, data = parse_event(event, size)
+    print_header(packet, data)
     if packet.flags & SS_PACKET_F_ERR:
         print('error')
-    else:
-        print(packet.data[:packet.len].decode(), end='', flush=True)
+    print(data.decode(), end='', flush=True)
 
-# FIXME: hexl and pcap output
+def ascii(c):
+    if c < 32 or c > 126:
+        return '.'
+    return chr(c)
+
+def hex_print(data):
+    for i in range(0, len(data), 16):
+        line = '%04x  ' % i
+        line += ' '.join('%02x' % x for x in data[i:i+8])
+        line += '   ' * (8 - len(data[i:i+8]))
+        line += '  '
+        line += ' '.join('%02x' % x for x in data[i+8:i+16])
+        line += '   ' * (8 - len(data[i+8:i+16]))
+        line += '  '
+        line += ''.join(ascii(x) for x in data[i:i+16])
+        print(line)
+
+def hex_output(cpu, event, size):
+    packet, data = parse_event(event, size)
+    print_header(packet, data)
+    if packet.flags & SS_PACKET_F_ERR:
+        print('error')
+    hex_print(data)
+
+def pcap_write_header(snaplen, network):
+    header = struct.pack('=IHHiIII', 0xa1b2c3d4, 2, 4, 0, 0, snaplen, network)
+    sys.stdout.write(header)
+
+def pcap_write_record(ts_sec, ts_usec, orig_len, data):
+    header = struct.pack('=IIII', ts_sec, ts_usec, len(data), orig_len)
+    sys.stdout.write(header)
+    sys.stdout.write(data)
+
+def pcap_output(cpu, event, size):
+    packet, data = parse_event(event, size)
+
+    ts = time.time()
+    ts_sec = int(ts)
+    ts_usec = int((ts % 1) * 10**6)
+    header = struct.pack('>QQ', 0, packet.pid)
+
+    data = header + data
+    size = len(header) + packet.len
+    pcap_write_record(ts_sec, ts_usec, size, data)
+
 outputs = {
+    'hex': hex_output,
     'string': string_output,
+    'pcap': pcap_output,
 }
 
-def main(args):
-    make_packet(args.seg_size)
+def sig_handler(signum, stack):
+    print('\n%d packets captured' % packet_count, file=sys.stderr)
+    sys.exit(signum)
 
+def main(args):
     filter = build_filter(args.sock)
     text = render_text(bpf_text, args.seg_size, args.nr_segs, filter)
+    if args.bpf:
+        print(text)
+        return
+
     b = BPF(text=text)
     b.attach_kprobe(
         event='unix_stream_sendmsg', fn_name='probe_unix_stream_sendmsg')
@@ -174,8 +258,18 @@ def main(args):
     npages = args.buffer_size / resource.getpagesize()
     npages = 2 ** math.ceil(math.log(npages, 2))
 
-    output_fn = outputs[args.output]
+    output_fn = outputs[args.format]
     b['events'].open_perf_buffer(output_fn, page_cnt=npages)
+
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
+
+    if args.format == 'pcap':
+        sys.stdout = open(args.output, 'wb')
+        pcap_write_header(args.seg_size, PCAP_LINK_TYPE)
+    else:
+        sys.stdout = open(args.output, 'w')
+
     while 1:
         b.perf_buffer_poll()
 
@@ -194,8 +288,14 @@ if __name__ == '__main__':
         '--buffer-size', type=int, default=SS_EVENT_BUFFER_SIZE,
         help='perf event buffer size')
     parser.add_argument(
-        '--output', choices=outputs.keys(), default='string',
+        '--format', choices=outputs.keys(), default='hex',
         help='output format')
+    parser.add_argument(
+        '--output', default='/dev/stdout',
+        help='output file')
+    parser.add_argument(
+        '--bpf', action='store_true',
+        help=argparse.SUPPRESS)
     parser.add_argument(
         'sock',
         help='unix socket path')
