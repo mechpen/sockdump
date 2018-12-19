@@ -19,7 +19,7 @@ bpf_text = '''
 #include <net/af_unix.h>
 
 #define SS_MAX_SEG_SIZE     __SS_MAX_SEG_SIZE__
-#define SS_MAX_NR_SEGS      __SS_MAX_NR_SEGS__
+#define SS_MAX_SEGS_PER_MSG __SS_MAX_SEGS_PER_MSG__
 
 #define SS_PACKET_F_ERR     1
 
@@ -78,7 +78,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     iov = iter->kvec;
 
     #pragma unroll
-    for (int i = 0; i < SS_MAX_NR_SEGS; i++) {
+    for (int i = 0; i < SS_MAX_SEGS_PER_MSG; i++) {
         if (i >= iter->nr_segs)
             break;
 
@@ -108,16 +108,16 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
 TASK_COMM_LEN = 16
 UNIX_PATH_MAX = 108
 
-SS_MAX_SEG_SIZE = 1024 * 10
-SS_MAX_NR_SEGS = 5
-SS_EVENT_BUFFER_SIZE = 16 * 1024 * 10
+SS_MAX_SEG_SIZE = 1024 * 50
+SS_MAX_SEGS_PER_MSG = 10
+SS_MAX_SEGS_IN_BUFFER = 100
 
 SS_PACKET_F_ERR = 1
 
-def render_text(bpf_text, seg_size, nr_segs, filter):
+def render_text(bpf_text, seg_size, segs_per_msg, filter):
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
-        '__SS_MAX_NR_SEGS__': nr_segs,
+        '__SS_MAX_SEGS_PER_MSG__': segs_per_msg,
         '__NUM_CPUS__': multiprocessing.cpu_count(),
         '__FILTER__': filter,
     }
@@ -244,7 +244,7 @@ def sig_handler(signum, stack):
 
 def main(args):
     filter = build_filter(args.sock)
-    text = render_text(bpf_text, args.seg_size, args.nr_segs, filter)
+    text = render_text(bpf_text, args.seg_size, args.segs_per_msg, filter)
     if args.bpf:
         print(text)
         return
@@ -253,7 +253,7 @@ def main(args):
     b.attach_kprobe(
         event='unix_stream_sendmsg', fn_name='probe_unix_stream_sendmsg')
 
-    npages = args.buffer_size / resource.getpagesize()
+    npages = args.seg_size * args.segs_in_buffer / resource.getpagesize()
     npages = 2 ** math.ceil(math.log(npages, 2))
 
     output_fn = outputs[args.format]
@@ -278,13 +278,15 @@ if __name__ == '__main__':
         description='Dump unix domain socket traffic')
     parser.add_argument(
         '--seg-size', type=int, default=SS_MAX_SEG_SIZE,
-        help='max segment size')
+        help='max segment size, increase this number'
+             ' if packet size is longer than captured size')
     parser.add_argument(
-        '--nr-segs', type=int, default=SS_MAX_NR_SEGS,
+        '--segs-per-msg', type=int, default=SS_MAX_SEGS_PER_MSG,
         help='max number of iovec segments')
     parser.add_argument(
-        '--buffer-size', type=int, default=SS_EVENT_BUFFER_SIZE,
-        help='perf event buffer size')
+        '--segs-in-buffer', type=int, default=SS_MAX_SEGS_IN_BUFFER,
+        help='max number of segs in perf event buffer,'
+             ' increase this number if message is dropped')
     parser.add_argument(
         '--format', choices=outputs.keys(), default='hex',
         help='output format')
