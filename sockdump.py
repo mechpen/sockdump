@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 import sys
 import time
 import math
@@ -89,16 +89,14 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
         n = iov->iov_len;
         bpf_probe_read(
             &packet->data,
-            // check size in args to make compiler/validator happy
-            n > sizeof(packet->data) ? sizeof(packet->data) : n,
+            SS_MAX_SEG_SIZE,           // FIXME: adaptive size
             buf);
 
         n += offsetof(struct packet, data);
         events.perf_submit(
             ctx,
             packet,
-            // check size in args to make compiler/validator happy
-            n > sizeof(*packet) ? sizeof(*packet) : n);
+            sizeof(struct packet));    // FIXME: adaptive size
 
         iov++;
     }
@@ -110,9 +108,9 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
 TASK_COMM_LEN = 16
 UNIX_PATH_MAX = 108
 
-SS_MAX_SEG_SIZE = 1024 * 1024
-SS_MAX_NR_SEGS = 10
-SS_EVENT_BUFFER_SIZE = 16 * 1024 * 1024
+SS_MAX_SEG_SIZE = 1024 * 10
+SS_MAX_NR_SEGS = 5
+SS_EVENT_BUFFER_SIZE = 16 * 1024 * 10
 
 SS_PACKET_F_ERR = 1
 
