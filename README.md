@@ -55,10 +55,11 @@ $ wireshark-gtk -X lua_script:wireshark/dummy.lua dump
 ```
 ![wireshark](wireshark/wireshark.jpg)
 
-## Limitations
+## Todo
 
-```
-$ grep FIXME: sockdump.py 
-# FIXME: sock path is relative
-# FIXME: optimize filter
-```
+Right now the output only has the sender's pid.  It would be nice to
+have pids of both the sender and the receiver.  One approach is to
+have 2 probes: one kprobe at `unix_stream_sendmsg()` to set
+`SO_PASSCRED` on the socket (using `bpf_setsockopt()`) such that the
+sender's pid is passed to the receiver, and the other kretprobe at
+`unix_stream_recvmsg()` to dump data and pids.

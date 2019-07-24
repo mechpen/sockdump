@@ -10,8 +10,6 @@ import multiprocessing
 
 from bcc import BPF
 
-# FIXME: sock path is relative
-
 bpf_text = '''
 #include <linux/sched.h>
 #include <linux/net.h>
@@ -42,6 +40,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
                               size_t len)
 {
     struct packet *packet;
+    struct sock *sk = sock->sk;
     struct unix_address *addr;
     char *path, *buf;
     unsigned int n, match = 0;
@@ -68,7 +67,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
 
     iter = &msg->msg_iter;
-    if (iter->type != WRITE || iter->iov_offset != 0) {
+    if ((iter->type & WRITE) == 0 || iter->iov_offset != 0) {
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         events.perf_submit(ctx, packet, offsetof(struct packet, data));
@@ -89,14 +88,16 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
         n = iov->iov_len;
         bpf_probe_read(
             &packet->data,
-            SS_MAX_SEG_SIZE,           // FIXME: adaptive size
+            // check size in args to make compiler/validator happy
+            n > sizeof(packet->data) ? sizeof(packet->data) : n,
             buf);
 
         n += offsetof(struct packet, data);
         events.perf_submit(
             ctx,
             packet,
-            sizeof(struct packet));    // FIXME: adaptive size
+            // check size in args to make compiler/validator happy
+            n > sizeof(*packet) ? sizeof(*packet) : n);
 
         iov++;
     }
@@ -125,7 +126,6 @@ def render_text(bpf_text, seg_size, segs_per_msg, filter):
         bpf_text = bpf_text.replace(k, str(v))
     return bpf_text
 
-# FIXME: optimize filter
 def build_filter(sock_path):
     sock_path = sock_path.encode() + b'\0'
     n = len(sock_path)
@@ -194,12 +194,11 @@ def ascii(c):
 
 def hex_print(data):
     for i in range(0, len(data), 16):
-        line = '%04x  ' % i
-        line += ' '.join('%02x' % x for x in data[i:i+8])
-        line += '   ' * (8 - len(data[i:i+8]))
+        line = '{:04x}'.format(i)
         line += '  '
-        line += ' '.join('%02x' % x for x in data[i+8:i+16])
-        line += '   ' * (8 - len(data[i+8:i+16]))
+        line += '{:<23s}'.format(' '.join('%02x' % x for x in data[i:i+8]))
+        line += '  '
+        line += '{:<23s}'.format(' '.join('%02x' % x for x in data[i+8:i+16]))
         line += '  '
         line += ''.join(ascii(x) for x in data[i:i+16])
         print(line)
