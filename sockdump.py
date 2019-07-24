@@ -40,7 +40,6 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
                               size_t len)
 {
     struct packet *packet;
-    struct sock *sk = sock->sk;
     struct unix_address *addr;
     char *path, *buf;
     unsigned int n, match = 0;
