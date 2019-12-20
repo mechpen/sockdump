@@ -23,6 +23,7 @@ bpf_text = '''
 
 struct packet {
     u32 pid;
+    u32 peer_pid;
     u32 len;
     u32 flags;
     char comm[TASK_COMM_LEN];
@@ -45,6 +46,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     unsigned int n, match = 0;
     struct iov_iter *iter;
     const struct kvec *iov;
+    struct pid *peer_pid;
 
     addr = ((struct unix_sock *)sock->sk)->addr;
     path = addr->name[0].sun_path;
@@ -64,6 +66,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
 
     packet->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
+    packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
 
     iter = &msg->msg_iter;
     if ((iter->type & WRITE) == 0 || iter->iov_offset != 0) {
@@ -142,6 +145,7 @@ class Packet(ct.Structure):
     _pack_ = 1
     _fields_ = [
         ('pid', ct.c_uint),
+        ('peer_pid', ct.c_uint),
         ('len', ct.c_uint),
         ('flags', ct.c_uint),
         ('comm', ct.c_char * TASK_COMM_LEN),
@@ -158,7 +162,6 @@ def parse_event(event, size):
     global packet_count
 
     packet_count += 1
-
     packet = ct.cast(event, ct.POINTER(Packet)).contents
     event += PACKET_SIZE
 
@@ -174,10 +177,11 @@ def parse_event(event, size):
 
 def print_header(packet, data):
     ts = time.time()
-    ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%d' % (ts%1 * 1000)
+    ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % (ts%1 * 1000)
 
-    print('%s >>> process %s[%d] len %d(%d)' % (
-        ts, packet.comm.decode(), packet.pid, len(data), packet.len))
+    print('%s >>> process %s [%d -> %d] len %d(%d)' % (
+        ts, packet.comm.decode(), packet.pid, packet.peer_pid,
+        len(data), packet.len))
 
 def string_output(cpu, event, size):
     packet, data = parse_event(event, size)
@@ -224,7 +228,7 @@ def pcap_output(cpu, event, size):
     ts = time.time()
     ts_sec = int(ts)
     ts_usec = int((ts % 1) * 10**6)
-    header = struct.pack('>QQ', 0, packet.pid)
+    header = struct.pack('>QQ', packet.peer_pid, packet.pid)
 
     data = header + data
     size = len(header) + packet.len
@@ -266,6 +270,7 @@ def main(args):
     else:
         sys.stdout = open(args.output, 'w')
 
+    print('waiting for data', file=sys.stderr)
     while 1:
         b.perf_buffer_poll()
 
