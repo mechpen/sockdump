@@ -49,11 +49,11 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     struct pid *peer_pid;
 
     addr = ((struct unix_sock *)sock->sk)->addr;
-    path = addr->name[0].sun_path;
+    path = addr->name->sun_path;
     __FILTER__
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
-    path = addr->name[0].sun_path;
+    path = addr->name->sun_path;
     __FILTER__
 
     if (match == 0)
