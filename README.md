@@ -5,6 +5,7 @@ Dump unix domain socket traffic.
 ## Requirement
 
 - bcc
+- python bcc bindings
 
 ## Example
 
