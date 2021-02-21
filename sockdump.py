@@ -43,26 +43,23 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     struct packet *packet;
     struct unix_address *addr;
     char path[__PATH_LEN__], *buf;
-    unsigned int n, match = 0;
+    unsigned int n, match = 0, offset;
     struct iov_iter *iter;
     const struct kvec *iov;
     struct pid *peer_pid;
 
+    offset = offsetof(struct unix_address, name);
+    offset += offsetof(struct sockaddr_un, sun_path);
+
     addr = ((struct unix_sock *)sock->sk)->addr;
     if (addr->len > 0) {
-        char *p = (char *)addr;
-        p += offsetof(struct unix_address, name);
-        p += offsetof(struct sockaddr_un, sun_path);
-        bpf_probe_read(&path, sizeof(path), p);
+        bpf_probe_read(&path, sizeof(path), (char *)addr+offset);
         __PATH_FILTER__
     }
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
     if (addr->len > 0) {
-        char *p = (char *)addr;
-        p += offsetof(struct unix_address, name);
-        p += offsetof(struct sockaddr_un, sun_path);
-        bpf_probe_read(&path, sizeof(path), p);
+        bpf_probe_read(&path, sizeof(path), (char *)addr+offset);
         __PATH_FILTER__
     }
 
