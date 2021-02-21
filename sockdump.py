@@ -47,7 +47,6 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
     struct iov_iter *iter;
     const struct kvec *iov;
     struct pid *peer_pid;
-    unsigned short family;
 
     addr = ((struct unix_sock *)sock->sk)->addr;
     if (addr->len > 0) {
