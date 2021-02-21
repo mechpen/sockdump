@@ -42,7 +42,7 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
 {
     struct packet *packet;
     struct unix_address *addr;
-    char *path, *buf;
+    char path[__PATH_LEN__], *buf;
     unsigned int n, match = 0;
     struct iov_iter *iter;
     const struct kvec *iov;
@@ -50,14 +50,20 @@ int probe_unix_stream_sendmsg(struct pt_regs *ctx,
 
     addr = ((struct unix_sock *)sock->sk)->addr;
     if (addr->len > 0) {
-        path = addr->name[0].sun_path;
-        __FILTER__
+        char *p = (char *)addr;
+        p += offsetof(struct unix_address, name);
+        p += offsetof(struct sockaddr_un, sun_path);
+        bpf_probe_read(&path, sizeof(path), p);
+        __PATH_FILTER__
     }
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
     if (addr->len > 0) {
-        path = addr->name[0].sun_path;
-        __FILTER__
+        char *p = (char *)addr;
+        p += offsetof(struct unix_address, name);
+        p += offsetof(struct sockaddr_un, sun_path);
+        bpf_probe_read(&path, sizeof(path), p);
+        __PATH_FILTER__
     }
 
     if (match == 0)
@@ -121,12 +127,14 @@ SS_MAX_SEGS_IN_BUFFER = 100
 
 SS_PACKET_F_ERR = 1
 
-def render_text(bpf_text, seg_size, segs_per_msg, filter):
+def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
+    path_filter, path_len = build_filter(args.sock)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
         '__SS_MAX_SEGS_PER_MSG__': segs_per_msg,
         '__NUM_CPUS__': multiprocessing.cpu_count(),
-        '__FILTER__': filter,
+        '__PATH_LEN__': path_len,
+        '__PATH_FILTER__': path_filter,
     }
     for k, v in replaces.items():
         bpf_text = bpf_text.replace(k, str(v))
@@ -139,11 +147,10 @@ def build_filter(sock_path):
         raise ValueError('invalid path')
 
     filter = 'if ('
-    filter += ' && '.join(
-        '*(path+%d) == %d' % (i, sock_path[i]) for i in range(n))
+    filter += ' && '.join('path[%d] == %d' % x for x in enumerate(sock_path))
     filter += ') match = 1;'
 
-    return filter
+    return filter, n
 
 class Packet(ct.Structure):
     _pack_ = 1
@@ -249,8 +256,7 @@ def sig_handler(signum, stack):
     sys.exit(signum)
 
 def main(args):
-    filter = build_filter(args.sock)
-    text = render_text(bpf_text, args.seg_size, args.segs_per_msg, filter)
+    text = render_text(bpf_text, args.seg_size, args.segs_per_msg, args.sock)
     if args.bpf:
         print(text)
         return
