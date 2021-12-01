@@ -35,7 +35,7 @@ struct packet {
 BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
 BPF_PERF_OUTPUT(events);
 
-int probe_unix_stream_sendmsg(struct pt_regs *ctx,
+int probe_unix_socket_sendmsg(struct pt_regs *ctx,
                               struct socket *sock,
                               struct msghdr *msg,
                               size_t len)
@@ -138,13 +138,21 @@ def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
     return bpf_text
 
 def build_filter(sock_path):
-    sock_path = sock_path.encode() + b'\0'
-    n = len(sock_path)
+    sock_path_bytes = sock_path.encode()
+    # if path ends with * - use prefix-based matching
+    if sock_path[-1] == "*":
+        sock_path_bytes = sock_path_bytes[:-1]
+    else:
+        sock_path_bytes += b'\0'
+    n = len(sock_path_bytes)
     if n > UNIX_PATH_MAX:
         raise ValueError('invalid path')
+    # match all paths
+    if n == 0:
+        return 'match = 1;', 0
 
     filter = 'if ('
-    filter += ' && '.join('path[%d] == %d' % x for x in enumerate(sock_path))
+    filter += ' && '.join('path[%d] == %d' % x for x in enumerate(sock_path_bytes))
     filter += ') match = 1;'
 
     return filter, n
@@ -214,12 +222,23 @@ def hex_print(data):
         line += ''.join(ascii(x) for x in data[i:i+16])
         print(line)
 
+def hexstring_print(data):
+    chunks = ['\\x{:02x}'.format(i) for i in bytes(data)]
+    print(''.join(chunks))
+
 def hex_output(cpu, event, size):
     packet, data = parse_event(event, size)
     print_header(packet, data)
     if packet.flags & SS_PACKET_F_ERR:
         print('error')
     hex_print(data)
+
+def hexstring_output(cpu, event, size):
+    packet, data = parse_event(event, size)
+    print_header(packet, data)
+    if packet.flags & SS_PACKET_F_ERR:
+        print('error')
+    hexstring_print(data)
 
 def pcap_write_header(snaplen, network):
     header = struct.pack('=IHHiIII', 0xa1b2c3d4, 2, 4, 0, 0, snaplen, network)
@@ -244,6 +263,7 @@ def pcap_output(cpu, event, size):
 
 outputs = {
     'hex': hex_output,
+    'hexstring': hexstring_output,
     'string': string_output,
     'pcap': pcap_output,
 }
@@ -260,7 +280,9 @@ def main(args):
 
     b = BPF(text=text)
     b.attach_kprobe(
-        event='unix_stream_sendmsg', fn_name='probe_unix_stream_sendmsg')
+        event='unix_stream_sendmsg', fn_name='probe_unix_socket_sendmsg')
+    b.attach_kprobe(
+        event='unix_dgram_sendmsg', fn_name='probe_unix_socket_sendmsg')
 
     npages = args.seg_size * args.segs_in_buffer / resource.getpagesize()
     npages = 2 ** math.ceil(math.log(npages, 2))
@@ -308,6 +330,6 @@ if __name__ == '__main__':
         help=argparse.SUPPRESS)
     parser.add_argument(
         'sock',
-        help='unix socket path')
+        help='unix socket path. Matches all sockets starting with given path if it ends with \'*\'')
     args = parser.parse_args()
     main(args)
