@@ -76,7 +76,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
 
     iter = &msg->msg_iter;
-    if ((iter->type & WRITE) == 0 || iter->iov_offset != 0) {
+    if (iter->iov_offset != 0) {
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         events.perf_submit(ctx, packet, offsetof(struct packet, data));
