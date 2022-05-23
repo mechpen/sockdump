@@ -144,7 +144,8 @@ def build_filter(sock_path):
         sock_path_bytes = sock_path_bytes[:-1]
     else:
         sock_path_bytes += b'\0'
-    n = len(sock_path_bytes)
+    # make size of path in bpf prog divisible by 8
+    n = (len(sock_path_bytes) + 7) & ~(7)
     if n > UNIX_PATH_MAX:
         raise ValueError('invalid path')
     # match all paths
