@@ -21,6 +21,8 @@ bpf_text = '''
 
 #define SS_PACKET_F_ERR     1
 
+#define ALIGN_8(x)          (((x)+7) & ~7)
+
 struct packet {
     u32 pid;
     u32 peer_pid;
@@ -42,7 +44,8 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
 {
     struct packet *packet;
     struct unix_address *addr;
-    char path[__PATH_LEN__], *buf;
+    char *buf;
+    char path[ALIGN_8(__PATH_LEN__)];    // compiler may optimize using u64
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
     const struct kvec *iov;
@@ -53,13 +56,13 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
 
     addr = ((struct unix_sock *)sock->sk)->addr;
     if (addr->len > 0) {
-        bpf_probe_read(&path, sizeof(path), (char *)addr+offset);
+        bpf_probe_read(&path, __PATH_LEN__, (char *)addr+offset);
         __PATH_FILTER__
     }
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
     if (addr->len > 0) {
-        bpf_probe_read(&path, sizeof(path), (char *)addr+offset);
+        bpf_probe_read(&path, __PATH_LEN__, (char *)addr+offset);
         __PATH_FILTER__
     }
 
