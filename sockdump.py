@@ -277,8 +277,13 @@ def sig_handler(signum, stack):
 
 def main(args):
     text = render_text(bpf_text, args.seg_size, args.segs_per_msg, args.sock)
+
     if args.bpf:
         print(text)
+        return
+
+    if args.disassemble:
+        BPF(text=text, debug=8)
         return
 
     b = BPF(text=text)
@@ -330,6 +335,9 @@ if __name__ == '__main__':
         help='output file')
     parser.add_argument(
         '--bpf', action='store_true',
+        help=argparse.SUPPRESS)
+    parser.add_argument(
+        '--disassemble', action='store_true',
         help=argparse.SUPPRESS)
     parser.add_argument(
         'sock',
