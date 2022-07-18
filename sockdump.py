@@ -21,8 +21,6 @@ bpf_text = '''
 
 #define SS_PACKET_F_ERR     1
 
-#define ALIGN_8(x)          (((x)+7) & ~7)
-
 struct packet {
     u32 pid;
     u32 peer_pid;
@@ -45,7 +43,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     struct packet *packet;
     struct unix_address *addr;
     char *buf;
-    char path[ALIGN_8(__PATH_LEN__)];    // compiler may optimize using u64
+    unsigned long path[__PATH_LEN_U64__] = {0};
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
     const struct kvec *iov;
@@ -128,12 +126,13 @@ SS_MAX_SEGS_IN_BUFFER = 100
 SS_PACKET_F_ERR = 1
 
 def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
-    path_filter, path_len = build_filter(args.sock)
+    path_filter, path_len, path_len_u64 = build_filter(args.sock)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
         '__SS_MAX_SEGS_PER_MSG__': segs_per_msg,
         '__NUM_CPUS__': multiprocessing.cpu_count(),
         '__PATH_LEN__': path_len,
+        '__PATH_LEN_U64__': path_len_u64,
         '__PATH_FILTER__': path_filter,
     }
     for k, v in replaces.items():
@@ -147,18 +146,29 @@ def build_filter(sock_path):
         sock_path_bytes = sock_path_bytes[:-1]
     else:
         sock_path_bytes += b'\0'
-    n = len(sock_path_bytes)
-    if n > UNIX_PATH_MAX:
+
+    path_len = len(sock_path_bytes)
+    if path_len > UNIX_PATH_MAX:
         raise ValueError('invalid path')
     # match all paths
-    if n == 0:
-        return 'match = 1;', 0
+    if path_len == 0:
+        return 'match = 1;', 0, 0
+
+    path_len_u64 = (path_len + 7) // 8
+    sock_path_bytes += b'\0' * (path_len_u64 * 8 - path_len)
+    sock_path_u64s = [
+        struct.unpack('Q', sock_path_bytes[i*8:(i+1)*8])[0]
+        for i in range(path_len_u64)
+    ]
 
     filter = 'if ('
-    filter += ' && '.join('path[%d] == %d' % x for x in enumerate(sock_path_bytes))
+    filter += ' && '.join(
+        'path[{}] == {}'.format(i, n)
+        for (i, n) in enumerate(sock_path_u64s)
+    )
     filter += ') match = 1;'
 
-    return filter, n
+    return filter, path_len, path_len_u64
 
 class Packet(ct.Structure):
     _pack_ = 1
