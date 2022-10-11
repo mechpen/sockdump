@@ -312,10 +312,12 @@ def main(args):
     signal.signal(signal.SIGTERM, sig_handler)
 
     if args.format == 'pcap':
-        sys.stdout = open(args.output, 'wb')
+        if args.output != '/dev/stdout':
+            sys.stdout = open(args.output, 'wb')
         pcap_write_header(args.seg_size, PCAP_LINK_TYPE)
     else:
-        sys.stdout = open(args.output, 'w')
+        if args.output != '/dev/stdout':
+            sys.stdout = open(args.output, 'w')
 
     print('waiting for data', file=sys.stderr)
     while 1:
