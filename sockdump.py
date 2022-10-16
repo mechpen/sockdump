@@ -27,6 +27,7 @@ struct packet {
     u32 len;
     u32 flags;
     char comm[TASK_COMM_LEN];
+    char path[UNIX_PATH_MAX];
     char data[SS_MAX_SEG_SIZE];
 };
 
@@ -43,33 +44,33 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     struct packet *packet;
     struct unix_address *addr;
     char *buf;
-    unsigned long path[__PATH_LEN_U64__] = {0};
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
     const struct iovec *iov;
     struct pid *peer_pid;
 
+    n = bpf_get_smp_processor_id();
+    packet = packet_array.lookup(&n);
+    if (packet == NULL)
+        return 0;
+    
     offset = offsetof(struct unix_address, name);
     offset += offsetof(struct sockaddr_un, sun_path);
 
     addr = ((struct unix_sock *)sock->sk)->addr;
+
     if (addr->len > 0) {
-        bpf_probe_read(&path, __PATH_LEN__, (char *)addr+offset);
+        bpf_probe_read(&(packet->path), UNIX_PATH_MAX, (char *)addr+offset);
         __PATH_FILTER__
     }
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
     if (addr->len > 0) {
-        bpf_probe_read(&path, __PATH_LEN__, (char *)addr+offset);
+        bpf_probe_read(&(packet->path), UNIX_PATH_MAX, (char *)addr+offset);
         __PATH_FILTER__
     }
 
     if (match == 0)
-        return 0;
-
-    n = bpf_get_smp_processor_id();
-    packet = packet_array.lookup(&n);
-    if (packet == NULL)
         return 0;
 
     packet->pid = bpf_get_current_pid_tgid() >> 32;
@@ -149,13 +150,11 @@ SS_MAX_SEGS_IN_BUFFER = 100
 SS_PACKET_F_ERR = 1
 
 def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
-    path_filter, path_len, path_len_u64 = build_filter(sock_path)
+    path_filter = build_filter(args.sock)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
         '__SS_MAX_SEGS_PER_MSG__': segs_per_msg,
         '__NUM_CPUS__': multiprocessing.cpu_count(),
-        '__PATH_LEN__': path_len,
-        '__PATH_LEN_U64__': path_len_u64,
         '__PATH_FILTER__': path_filter,
     }
     for k, v in replaces.items():
@@ -175,23 +174,16 @@ def build_filter(sock_path):
         raise ValueError('invalid path')
     # match all paths
     if path_len == 0:
-        return 'match = 1;', 0, 0
-
-    path_len_u64 = (path_len + 7) // 8
-    sock_path_bytes += b'\0' * (path_len_u64 * 8 - path_len)
-    sock_path_u64s = [
-        struct.unpack('Q', sock_path_bytes[i*8:(i+1)*8])[0]
-        for i in range(path_len_u64)
-    ]
+        return 'match = 1;'
 
     filter = 'if ('
     filter += ' && '.join(
-        'path[{}] == {}'.format(i, n)
-        for (i, n) in enumerate(sock_path_u64s)
+        'packet->path[{}] == {}'.format(i, n)
+        for (i, n) in enumerate(sock_path_bytes)
     )
     filter += ') match = 1;'
 
-    return filter, path_len, path_len_u64
+    return filter
 
 class Packet(ct.Structure):
     _pack_ = 1
@@ -201,6 +193,7 @@ class Packet(ct.Structure):
         ('len', ct.c_uint),
         ('flags', ct.c_uint),
         ('comm', ct.c_char * TASK_COMM_LEN),
+        ('path', ct.c_char * UNIX_PATH_MAX),
         # variable length data
     ]
 
@@ -231,8 +224,8 @@ def print_header(packet, data):
     ts = time.time()
     ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % (ts%1 * 1000)
 
-    print('%s >>> process %s [%d -> %d] len %d(%d)' % (
-        ts, packet.comm.decode(), packet.pid, packet.peer_pid,
+    print('%s >>> process %s [%d -> %d] path %s len %d(%d)' % (
+        ts, packet.comm.decode(), packet.pid, packet.peer_pid, packet.path.decode(),
         len(data), packet.len))
 
 def string_output(cpu, event, size):
