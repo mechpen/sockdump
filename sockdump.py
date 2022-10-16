@@ -46,7 +46,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     char *buf;
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
-    const struct kvec *iov;
+    const struct iovec *iov;
     struct pid *peer_pid;
 
     n = bpf_get_smp_processor_id();
@@ -78,14 +78,37 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
 
     iter = &msg->msg_iter;
-    if (iter->iov_offset != 0) {
+
+    if (iter->iter_type == ITER_UBUF) {
+        packet->len = len;
+        packet->flags = 0;
+        buf = iter->ubuf;
+        n = len;
+
+        bpf_probe_read(
+            &packet->data,
+            // check size in args to make compiler/validator happy
+            n > sizeof(packet->data) ? sizeof(packet->data) : n,
+            buf);
+
+        n += offsetof(struct packet, data);
+        events.perf_submit(
+            ctx,
+            packet,
+            // check size in args to make compiler/validator happy
+            n > sizeof(*packet) ? sizeof(*packet) : n);
+
+        return 0;
+    }
+
+    if (iter->iter_type != ITER_IOVEC || iter->iov_offset != 0) {
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         events.perf_submit(ctx, packet, offsetof(struct packet, data));
         return 0;
     }
 
-    iov = iter->kvec;
+    iov = iter->iov;
 
     #pragma unroll
     for (int i = 0; i < SS_MAX_SEGS_PER_MSG; i++) {
@@ -305,10 +328,12 @@ def main(args):
     signal.signal(signal.SIGTERM, sig_handler)
 
     if args.format == 'pcap':
-        sys.stdout = open(args.output, 'wb')
+        if args.output != '/dev/stdout':
+            sys.stdout = open(args.output, 'wb')
         pcap_write_header(args.seg_size, PCAP_LINK_TYPE)
     else:
-        sys.stdout = open(args.output, 'w')
+        if args.output != '/dev/stdout':
+            sys.stdout = open(args.output, 'w')
 
     print('waiting for data', file=sys.stderr)
     while 1:
