@@ -46,7 +46,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     unsigned long path[__PATH_LEN_U64__] = {0};
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
-    const struct kvec *iov;
+    const struct iovec *iov;
     struct pid *peer_pid;
 
     offset = offsetof(struct unix_address, name);
@@ -77,14 +77,37 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
 
     iter = &msg->msg_iter;
-    if (iter->iov_offset != 0) {
+
+    if (iter->iter_type == ITER_UBUF) {
+        packet->len = len;
+        packet->flags = 0;
+        buf = iter->ubuf;
+        n = len;
+
+        bpf_probe_read(
+            &packet->data,
+            // check size in args to make compiler/validator happy
+            n > sizeof(packet->data) ? sizeof(packet->data) : n,
+            buf);
+
+        n += offsetof(struct packet, data);
+        events.perf_submit(
+            ctx,
+            packet,
+            // check size in args to make compiler/validator happy
+            n > sizeof(*packet) ? sizeof(*packet) : n);
+
+        return 0;
+    }
+
+    if (iter->iter_type != ITER_IOVEC || iter->iov_offset != 0) {
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         events.perf_submit(ctx, packet, offsetof(struct packet, data));
         return 0;
     }
 
-    iov = iter->kvec;
+    iov = iter->iov;
 
     #pragma unroll
     for (int i = 0; i < SS_MAX_SEGS_PER_MSG; i++) {
@@ -126,7 +149,7 @@ SS_MAX_SEGS_IN_BUFFER = 100
 SS_PACKET_F_ERR = 1
 
 def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
-    path_filter, path_len, path_len_u64 = build_filter(args.sock)
+    path_filter, path_len, path_len_u64 = build_filter(sock_path)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
         '__SS_MAX_SEGS_PER_MSG__': segs_per_msg,
