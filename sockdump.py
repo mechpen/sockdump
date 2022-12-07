@@ -15,6 +15,7 @@ bpf_text = '''
 #include <linux/net.h>
 #include <uapi/linux/un.h>
 #include <net/af_unix.h>
+#include <linux/version.h>
 
 #define SS_MAX_SEG_SIZE     __SS_MAX_SEG_SIZE__
 #define SS_MAX_SEGS_PER_MSG __SS_MAX_SEGS_PER_MSG__
@@ -50,7 +51,11 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     unsigned long path[__PATH_LEN_U64__] = {0};
     unsigned int n, match = 0, offset;
     struct iov_iter *iter;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     const struct iovec *iov;
+#else
+    const struct kvec *iov;
+#endif
     struct pid *peer_pid;
 
     addr = ((struct unix_sock *)sock->sk)->addr;
@@ -81,7 +86,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
 
     iter = &msg->msg_iter;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     if (iter->iter_type == ITER_UBUF) {
         packet->len = len;
         packet->flags = 0;
@@ -105,13 +110,20 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     }
 
     if (iter->iter_type != ITER_IOVEC || iter->iov_offset != 0) {
+#else
+    if (iter->iov_offset != 0) {
+#endif
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         events.perf_submit(ctx, packet, offsetof(struct packet, data));
         return 0;
     }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     iov = iter->iov;
+#else
+    iov = iter->kvec;
+#endif
 
     #pragma unroll
     for (int i = 0; i < SS_MAX_SEGS_PER_MSG; i++) {
