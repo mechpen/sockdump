@@ -61,14 +61,26 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     addr = ((struct unix_sock *)sock->sk)->addr;
     if (addr->len > 0) {
         sock_path = (char *)addr + SOCK_PATH_OFFSET;
-        bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        if (*sock_path == 0) {
+            // abstract sockets start with \\0 and the name comes after
+            // (they actually have no @ prefix but some tools use that)
+            bpf_probe_read(&path, __PATH_LEN__ - 1, sock_path + 1);
+        } else {
+            bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        }
         __PATH_FILTER__
     }
 
     addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
     if (match == 0 && addr->len > 0) {
         sock_path = (char *)addr + SOCK_PATH_OFFSET;
-        bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        if (*sock_path == 0) {
+            // abstract sockets start with \\0 and the name comes after
+            // (they actually have no @ prefix but some tools use that)
+            bpf_probe_read(&path, __PATH_LEN__ - 1, sock_path + 1);
+        } else {
+            bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        }
         __PATH_FILTER__
     }
 
@@ -183,6 +195,8 @@ def build_filter(sock_path):
     # if path ends with * - use prefix-based matching
     if sock_path[-1] == "*":
         sock_path_bytes = sock_path_bytes[:-1]
+    elif sock_path[0] == "@":
+        sock_path_bytes = sock_path_bytes[1:] + b'\0'
     else:
         sock_path_bytes += b'\0'
 
