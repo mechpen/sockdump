@@ -366,8 +366,7 @@ def main(args):
     signal.signal(signal.SIGTERM, sig_handler)
 
     if args.format == 'pcap':
-        if args.output != '/dev/stdout':
-            sys.stdout = open(args.output, 'wb')
+        sys.stdout = open(args.output, 'wb')
         pcap_write_header(args.seg_size, PCAP_LINK_TYPE)
     else:
         if args.output != '/dev/stdout':
