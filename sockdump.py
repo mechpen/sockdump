@@ -406,6 +406,13 @@ if __name__ == '__main__':
         help=argparse.SUPPRESS)
     parser.add_argument(
         'sock',
-        help='unix socket path. Matches all sockets starting with given path if it ends with \'*\'')
+        help=" ".join([
+            "unix socket path.",
+            "Matches all sockets starting with given path if it ends with \'*\'.",
+            "Note that the path must be the same string used in the application,",
+            "instead of the actual file path.",
+            "If the application used a relative path, the same relative path should be used.",
+            "If the application runs inside a container, the path inside the container should be used.",
+        ]))
     args = parser.parse_args()
     main(args)
