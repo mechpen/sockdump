@@ -95,7 +95,7 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     packet->pid = bpf_get_current_pid_tgid() >> 32;
     bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
     bpf_probe_read(&packet->path, UNIX_PATH_MAX, sock_path);
-    packet->peer_pid = sock->sk->sk_peer_pid->numbers[0].nr;
+    packet->peer_pid = sock->sk->sk_peer_pid->numbers->nr;
 
     iter = &msg->msg_iter;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
@@ -131,7 +131,9 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
         return 0;
     }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+    iov = iter->__iov;
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     iov = iter->iov;
 #else
     iov = iter->kvec;
