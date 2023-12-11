@@ -97,6 +97,8 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
     bpf_probe_read(&packet->path, UNIX_PATH_MAX, sock_path);
     packet->peer_pid = sock->sk->sk_peer_pid->numbers->nr;
 
+    __PID_FILTER__
+
     iter = &msg->msg_iter;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     if (iter->iter_type == ITER_UBUF) {
@@ -178,7 +180,7 @@ SS_MAX_SEGS_IN_BUFFER = 100
 
 SS_PACKET_F_ERR = 1
 
-def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
+def render_text(bpf_text, seg_size, segs_per_msg, sock_path, pid=None):
     path_filter, path_len, path_len_u64 = build_filter(sock_path)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
@@ -188,6 +190,12 @@ def render_text(bpf_text, seg_size, segs_per_msg, sock_path):
         '__PATH_LEN_U64__': max(path_len_u64, 1),
         '__PATH_FILTER__': path_filter,
     }
+
+    if pid:
+        replaces['__PID_FILTER__'] = 'if (packet->pid != %s && packet->peer_pid != %s) { return 0; }' % (pid, pid)
+    else:
+        replaces['__PID_FILTER__'] = ''
+
     for k, v in replaces.items():
         bpf_text = bpf_text.replace(k, str(v))
     return bpf_text
@@ -342,7 +350,7 @@ def sig_handler(signum, stack):
     sys.exit(signum)
 
 def main(args):
-    text = render_text(bpf_text, args.seg_size, args.segs_per_msg, args.sock)
+    text = render_text(bpf_text, args.seg_size, args.segs_per_msg, args.sock, args.pid)
 
     if args.bpf:
         print(text)
@@ -400,6 +408,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '--output', default='/dev/stdout',
         help='output file')
+    parser.add_argument(
+        '--pid', default=None,
+        help='Pid filter, default no filter')
     parser.add_argument(
         '--bpf', action='store_true',
         help=argparse.SUPPRESS)
