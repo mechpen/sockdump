@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import os
 import sys
 import time
 import math
@@ -181,6 +182,7 @@ SS_MAX_SEGS_IN_BUFFER = 100
 SS_PACKET_F_ERR = 1
 
 def render_text(bpf_text, seg_size, segs_per_msg, sock_path, pid=None):
+    sock_path = os.path.realpath(sock_path)
     path_filter, path_len, path_len_u64 = build_filter(sock_path)
     replaces = {
         '__SS_MAX_SEG_SIZE__': seg_size,
