@@ -402,7 +402,6 @@ def main(args):
         else:
             sys.stdout.flush() # fflush buffer of current stdout
             sys.stdout = os.fdopen(sys.stdout.fileno(), 'wb') # fdopen as binary
-            # sys.stdout = sys.stdout.buffer
         pcap_write_header(args.seg_size, PCAP_LINK_TYPE)
     else:
         if args.output != '/dev/stdout':
