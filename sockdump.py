@@ -242,7 +242,7 @@ class Packet(ct.Structure):
         ('len', ct.c_uint),
         ('flags', ct.c_uint),
         ('comm', ct.c_char * TASK_COMM_LEN),
-        ('path', ct.c_char * UNIX_PATH_MAX),
+        ('path', ct.c_byte * UNIX_PATH_MAX), # using c_byte to properly deal with leading \0 abstract UN*X domain sockets
         # variable length data
     ]
 
@@ -270,13 +270,24 @@ def parse_event(event, size):
 
     return packet, data
 
+def sanitize_pathname(pathname):
+    sanitized_pathname = bytearray(pathname)
+    # abstract UN*X domain socket?
+    if (sanitized_pathname[0] == 0):
+        sanitized_pathname[0] = ord('@')
+
+    # split at first string terminator
+    split_pathname = sanitized_pathname.split(b'\x00', 1)
+
+    return split_pathname[0] if len(split_pathname) > 1 else sanitized_pathname
+
 def print_header(packet, data):
     ts = time.time()
     ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % (ts%1 * 1000)
 
     print('%s >>> process %s [%d -> %d] path %s len %d(%d)' % (
         ts, packet.comm.decode(), packet.pid, packet.peer_pid,
-        packet.path.decode(), len(data), packet.len))
+        sanitize_pathname(packet.path).decode(), len(data), packet.len))
 
 def string_output(cpu, event, size):
     global flush_after_each_packet
