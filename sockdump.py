@@ -285,7 +285,7 @@ def string_output(cpu, event, size):
     print_header(packet, data)
     if packet.flags & SS_PACKET_F_ERR:
         print('error')
-    print(str(data.raw, encoding='ascii', errors='ignore'), end='', flush=flush_after_each_event)
+    print(str(data.raw, encoding='ascii', errors='ignore'), end='', flush=flush_after_each_packet)
 
 def ascii(c):
     if c < 32 or c > 126:
