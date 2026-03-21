@@ -234,7 +234,6 @@ def build_filter(sock_path):
     return filter, path_len, path_len_u64
 
 class Packet(ct.Structure):
-    _pack_ = 1
     _fields_ = [
         ('pid', ct.c_uint),
         ('peer_pid', ct.c_uint),
