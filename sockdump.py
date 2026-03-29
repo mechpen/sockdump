@@ -345,7 +345,7 @@ def pcap_output(cpu, event, size):
     ts = time.time()
     ts_sec = int(ts)
     ts_usec = int((ts % 1) * 10**6)
-    header = struct.pack('>QQ', packet.peer_pid, packet.pid)
+    header = struct.pack(f'>{UNIX_PATH_MAX + 1}pQQ', packet.path, packet.peer_pid, packet.pid)
 
     data = header + data
     size = len(header) + packet.len
