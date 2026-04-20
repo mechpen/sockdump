@@ -241,7 +241,8 @@ class Packet(ct.Structure):
         ('len', ct.c_uint),
         ('flags', ct.c_uint),
         ('comm', ct.c_char * TASK_COMM_LEN),
-        ('path', ct.c_char * UNIX_PATH_MAX),
+         # using c_byte here to properly deal with the leading '\0' abstract UN*X domain sockets
+        ('path', ct.c_byte * UNIX_PATH_MAX),
         # variable length data
     ]
 
@@ -269,13 +270,29 @@ def parse_event(event, size):
 
     return packet, data
 
+def sanitize_pathname(pathname, replacement=0):
+    # create modifyable copy
+    sanitized_pathname = bytearray(pathname)
+
+    start_idx = 0
+
+    # abstract UN*X domain socket? => replace leading '\0' with replacement
+    if (sanitized_pathname[0] == 0):
+        start_idx = 1 if len(sanitized_pathname) > 1 else 0
+        sanitized_pathname[0] = replacement
+
+    # discard garbage starting with first end-of-string character (excluding the leading one)
+    eos_idx = sanitized_pathname.find(b'\x00', start_idx)
+
+    return sanitized_pathname if eos_idx == -1 else sanitized_pathname[:eos_idx]
+
 def print_header(packet, data):
     ts = time.time()
     ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % (ts%1 * 1000)
 
     print('%s >>> process %s [%d -> %d] path %s len %d(%d)' % (
         ts, packet.comm.decode(), packet.pid, packet.peer_pid,
-        packet.path.decode(), len(data), packet.len))
+        sanitize_pathname(packet.path, ord('@')).decode(), len(data), packet.len))
 
 def string_output(cpu, event, size):
     global flush_after_each_packet
@@ -345,7 +362,7 @@ def pcap_output(cpu, event, size):
     ts = time.time()
     ts_sec = int(ts)
     ts_usec = int((ts % 1) * 10**6)
-    header = struct.pack(f'>{UNIX_PATH_MAX + 1}pQQ', packet.path, packet.peer_pid, packet.pid)
+    header = struct.pack(f'>{UNIX_PATH_MAX + 1}pQQ', sanitize_pathname(packet.path), packet.peer_pid, packet.pid)
 
     data = header + data
     size = len(header) + packet.len
