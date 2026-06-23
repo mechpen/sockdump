@@ -22,6 +22,7 @@ bpf_text = '''
 #define SS_MAX_SEGS_PER_MSG __SS_MAX_SEGS_PER_MSG__
 
 #define SS_PACKET_F_ERR     1
+#define SS_PACKET_F_RECV    2
 
 #define SOCK_PATH_OFFSET    \
     (offsetof(struct unix_address, name) + offsetof(struct sockaddr_un, sun_path))
@@ -40,6 +41,18 @@ struct packet {
 // percpu array element size cannot be larger than 3k
 BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
 BPF_PERF_OUTPUT(events);
+
+struct recv_context {
+    struct socket *sock;
+    void __user *buf;
+    size_t buf_len;
+    u32 pid;
+    u32 peer_pid;
+    char comm[TASK_COMM_LEN];
+    char path[UNIX_PATH_MAX];
+};
+
+BPF_HASH(recv_ctx_map, u64, struct recv_context);
 
 int probe_unix_socket_sendmsg(struct pt_regs *ctx,
                               struct socket *sock,
@@ -170,6 +183,132 @@ int probe_unix_socket_sendmsg(struct pt_regs *ctx,
 
     return 0;
 }
+
+int probe_unix_socket_recvmsg_entry(struct pt_regs *ctx,
+                                    struct socket *sock,
+                                    struct msghdr *msg,
+                                    size_t len,
+                                    int flags)
+{
+    struct unix_address *addr;
+    char *sock_path;
+    unsigned long path[__PATH_LEN_U64__] = {0};
+    unsigned int match = 0;
+    struct iov_iter *iter;
+    struct recv_context rc = {};
+    u64 tid = bpf_get_current_pid_tgid();
+
+    addr = ((struct unix_sock *)sock->sk)->addr;
+    if (addr->len > 0) {
+        sock_path = (char *)addr + SOCK_PATH_OFFSET;
+        if (*sock_path == 0) {
+            bpf_probe_read(&path, __PATH_LEN__ - 1, sock_path + 1);
+        } else {
+            bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        }
+        __PATH_FILTER__
+    }
+
+    addr = ((struct unix_sock *)((struct unix_sock *)sock->sk)->peer)->addr;
+    if (match == 0 && addr->len > 0) {
+        sock_path = (char *)addr + SOCK_PATH_OFFSET;
+        if (*sock_path == 0) {
+            bpf_probe_read(&path, __PATH_LEN__ - 1, sock_path + 1);
+        } else {
+            bpf_probe_read(&path, __PATH_LEN__, sock_path);
+        }
+        __PATH_FILTER__
+    }
+
+    if (match == 0)
+        return 0;
+
+    rc.sock = sock;
+    rc.pid = bpf_get_current_pid_tgid() >> 32;
+    rc.peer_pid = sock->sk->sk_peer_pid->numbers->nr;
+    bpf_get_current_comm(&rc.comm, sizeof(rc.comm));
+    bpf_probe_read(&rc.path, UNIX_PATH_MAX, sock_path);
+
+    iter = &msg->msg_iter;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
+    if (iter->iter_type == ITER_UBUF) {
+        rc.buf = iter->ubuf;
+        rc.buf_len = len;
+    } else if (iter->iter_type == ITER_IOVEC) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+        const struct iovec *iov = iter->__iov;
+#else
+        const struct iovec *iov = iter->iov;
+#endif
+        rc.buf = iov->iov_base;
+        rc.buf_len = iov->iov_len;
+    } else {
+        return 0;
+    }
+#else
+    {
+        const struct kvec *iov = iter->kvec;
+        rc.buf = iov->iov_base;
+        rc.buf_len = iov->iov_len;
+    }
+#endif
+
+    recv_ctx_map.update(&tid, &rc);
+    return 0;
+}
+
+int probe_unix_socket_recvmsg_return(struct pt_regs *ctx)
+{
+    struct packet *packet;
+    struct recv_context *rc;
+    u64 tid = bpf_get_current_pid_tgid();
+    int ret = PT_REGS_RC(ctx);
+    unsigned int n;
+
+    rc = recv_ctx_map.lookup(&tid);
+    if (rc == NULL)
+        return 0;
+
+    if (ret <= 0) {
+        recv_ctx_map.delete(&tid);
+        return 0;
+    }
+
+    n = bpf_get_smp_processor_id();
+    packet = packet_array.lookup(&n);
+    if (packet == NULL) {
+        recv_ctx_map.delete(&tid);
+        return 0;
+    }
+
+    packet->pid = rc->pid;
+    packet->peer_pid = rc->peer_pid;
+    bpf_probe_read(&packet->comm, sizeof(packet->comm), rc->comm);
+    bpf_probe_read(&packet->path, UNIX_PATH_MAX, rc->path);
+
+    __PID_FILTER_RECV__
+
+    packet->len = (u32)ret;
+    packet->flags = SS_PACKET_F_RECV;
+
+    n = (u32)ret;
+    if (n > rc->buf_len)
+        n = rc->buf_len;
+
+    bpf_probe_read_user(
+        &packet->data,
+        n > sizeof(packet->data) ? sizeof(packet->data) : n,
+        rc->buf);
+
+    n += offsetof(struct packet, data);
+    events.perf_submit(
+        ctx,
+        packet,
+        n > sizeof(*packet) ? sizeof(*packet) : n);
+
+    recv_ctx_map.delete(&tid);
+    return 0;
+}
 '''
 
 TASK_COMM_LEN = 16
@@ -180,6 +319,7 @@ SS_MAX_SEGS_PER_MSG = 10
 SS_MAX_SEGS_IN_BUFFER = 100
 
 SS_PACKET_F_ERR = 1
+SS_PACKET_F_RECV = 2
 
 def render_text(bpf_text, seg_size, segs_per_msg, sock_path, pid=None):
     path_filter, path_len, path_len_u64 = build_filter(sock_path)
@@ -194,8 +334,10 @@ def render_text(bpf_text, seg_size, segs_per_msg, sock_path, pid=None):
 
     if pid:
         replaces['__PID_FILTER__'] = 'if (packet->pid != %s && packet->peer_pid != %s) { return 0; }' % (pid, pid)
+        replaces['__PID_FILTER_RECV__'] = 'if (packet->pid != %s && packet->peer_pid != %s) { recv_ctx_map.delete(&tid); return 0; }' % (pid, pid)
     else:
         replaces['__PID_FILTER__'] = ''
+        replaces['__PID_FILTER_RECV__'] = ''
 
     for k, v in replaces.items():
         bpf_text = bpf_text.replace(k, str(v))
@@ -273,8 +415,9 @@ def print_header(packet, data):
     ts = time.time()
     ts = time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % (ts%1 * 1000)
 
-    print('%s >>> process %s [%d -> %d] path %s len %d(%d)' % (
-        ts, packet.comm.decode(), packet.pid, packet.peer_pid,
+    direction = '<<<' if (packet.flags & SS_PACKET_F_RECV) else '>>>'
+    print('%s %s process %s [%d -> %d] path %s len %d(%d)' % (
+        ts, direction, packet.comm.decode(), packet.pid, packet.peer_pid,
         packet.path.decode(), len(data), packet.len))
 
 def string_output(cpu, event, size):
@@ -383,6 +526,14 @@ def main(args):
         event='unix_stream_sendmsg', fn_name='probe_unix_socket_sendmsg')
     b.attach_kprobe(
         event='unix_dgram_sendmsg', fn_name='probe_unix_socket_sendmsg')
+    b.attach_kprobe(
+        event='unix_stream_recvmsg', fn_name='probe_unix_socket_recvmsg_entry')
+    b.attach_kretprobe(
+        event='unix_stream_recvmsg', fn_name='probe_unix_socket_recvmsg_return')
+    b.attach_kprobe(
+        event='unix_dgram_recvmsg', fn_name='probe_unix_socket_recvmsg_entry')
+    b.attach_kretprobe(
+        event='unix_dgram_recvmsg', fn_name='probe_unix_socket_recvmsg_return')
 
     npages = args.seg_size * args.segs_in_buffer / resource.getpagesize()
     npages = 2 ** math.ceil(math.log(npages, 2))
@@ -457,3 +608,4 @@ if __name__ == '__main__':
         ]))
     args = parser.parse_args()
     main(args)
+
